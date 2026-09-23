@@ -250,3 +250,73 @@ test('Phase 17: Valid Complete Wristband Detection & Orientation', async () => {
   assert.ok(resReversed.regionROIs.badgeROI.x > resReversed.regionROIs.expiryROI.x, 'In reversed wristband, Detector ROI should be to the right of Expiry ROI');
 });
 
+test('Phase 20 & Groq Vision: Detection Response Validation & Bounding Box Boundaries', async () => {
+  const { validateGroqDetectionResponse } = await import('../ai/groqStripDetector.js');
+
+  // 1. Valid H2S sensor panel detection
+  const validRes = validateGroqDetectionResponse({
+    stripDetected: true,
+    confidence: 0.95,
+    x: 0.20,
+    y: 0.30,
+    width: 0.50,
+    height: 0.25,
+    orientation: 'horizontal',
+    reason: 'Physical H2S sensor panel detected.'
+  }, 1000, 800);
+
+  assert.equal(validRes.isValid, true);
+  assert.equal(validRes.confidence, 0.95);
+  assert.equal(validRes.x, 0.20);
+  assert.equal(validRes.width, 0.50);
+
+  // 2. Rejection response (stripDetected = false)
+  const rejectedRes = validateGroqDetectionResponse({
+    stripDetected: false,
+    confidence: 0.90,
+    x: 0, y: 0, width: 0, height: 0,
+    orientation: 'unknown',
+    reason: 'No physical H2S sensor panel detected.'
+  }, 1000, 800);
+
+  assert.equal(rejectedRes.isValid, false);
+
+  // 3. Out-of-bounds bounding box -> Invalid
+  const oobRes = validateGroqDetectionResponse({
+    stripDetected: true,
+    confidence: 0.95,
+    x: 0.70, y: 0.70, width: 0.50, height: 0.50
+  }, 1000, 800);
+
+  assert.equal(oobRes.isValid, false);
+
+  // 4. Non-numeric or missing confidence -> Invalid
+  const badConf = validateGroqDetectionResponse({
+    stripDetected: true,
+    confidence: 'invalid',
+    x: 0.1, y: 0.1, width: 0.4, height: 0.2
+  }, 1000, 800);
+
+  assert.equal(badConf.isValid, false);
+});
+
+test('Phase 20 & Groq Vision: Cropped Sensor Panel Analysis (LEFT detector, MIDDLE scale, RIGHT expiry)', async () => {
+  const { analyzeCroppedSensorPanel } = await import('./colorAnalyzer.js');
+
+  const croppedCtx = createMockContext(300, 100, ({ fillRect }) => {
+    fillRect(0, 0, 90, 100, 75, 25, 122);    // LEFT: Detector (#4B197A)
+    fillRect(95, 0, 110, 100, 147, 127, 121); // MIDDLE: Ref Scale (#937F79)
+    fillRect(210, 0, 90, 100, 33, 95, 154);   // RIGHT: Expiry (#215F9A)
+  });
+
+  const res = analyzeCroppedSensorPanel(croppedCtx, 300, 100);
+  assert.equal(res.isDetected, true);
+  assert.ok(res.badgeRGB);
+  assert.ok(res.refScaleRGB);
+  assert.ok(res.expiryRGB);
+
+  assert.ok(res.regionROIs.badgeROI.x < res.regionROIs.refROI.x, 'LEFT Detector ROI must precede MIDDLE Ref Scale ROI');
+  assert.ok(res.regionROIs.refROI.x < res.regionROIs.expiryROI.x, 'MIDDLE Ref Scale ROI must precede RIGHT Expiry ROI');
+});
+
+

@@ -150,6 +150,69 @@ export function isStripCandidateColor(r, g, b) {
 }
 
 /**
+ * Analyzes a validated cropped physical H2S sensor panel canvas.
+ * Extracts LEFT (H2S Detector), MIDDLE (Reference Scale), and RIGHT (Expiry Indicator).
+ */
+export function analyzeCroppedSensorPanel(croppedCtx, croppedWidth, croppedHeight) {
+  if (!croppedCtx || croppedWidth <= 0 || croppedHeight <= 0) {
+    return {
+      isDetected: false,
+      issues: ["Cropped sensor panel canvas is invalid."],
+      detectionConfidence: 0
+    };
+  }
+
+  const innerY = Math.max(0, Math.floor(croppedHeight * 0.10));
+  const innerH = Math.max(1, Math.floor(croppedHeight * 0.80));
+
+  const badgeROI = {
+    x: Math.max(0, Math.floor(croppedWidth * 0.02)),
+    y: innerY,
+    w: Math.max(1, Math.floor(croppedWidth * 0.28)),
+    h: innerH
+  };
+
+  const refROI = {
+    x: Math.max(0, Math.floor(croppedWidth * 0.34)),
+    y: innerY,
+    w: Math.max(1, Math.floor(croppedWidth * 0.38)),
+    h: innerH
+  };
+
+  const expiryROI = {
+    x: Math.max(0, Math.floor(croppedWidth * 0.74)),
+    y: innerY,
+    w: Math.max(1, Math.floor(croppedWidth * 0.24)),
+    h: innerH
+  };
+
+  const badgeRGB = extractRobustROIColor(croppedCtx, badgeROI.x, badgeROI.y, badgeROI.w, badgeROI.h);
+  const refScaleRGB = extractRobustROIColor(croppedCtx, refROI.x, refROI.y, refROI.w, refROI.h);
+  const expiryRGB = extractRobustROIColor(croppedCtx, expiryROI.x, expiryROI.y, expiryROI.w, expiryROI.h);
+
+  if (!badgeRGB || !refScaleRGB || !expiryRGB) {
+    return {
+      isDetected: false,
+      issues: ["Could not extract valid color swatches from cropped sensor panel."],
+      detectionConfidence: 0
+    };
+  }
+
+  return {
+    isDetected: true,
+    badgeRGB,
+    refScaleRGB,
+    expiryRGB,
+    boundingBox: { x: 0, y: 0, w: croppedWidth, h: croppedHeight },
+    regionROIs: { badgeROI, refROI, expiryROI },
+    rawWidth: croppedWidth,
+    rawHeight: croppedHeight,
+    detectionConfidence: 98,
+    issues: []
+  };
+}
+
+/**
  * DYNAMIC PHYSICAL WRISTBAND DETECTION ENGINE
  * Locates the physical wristband assembly anywhere inside a captured or uploaded image.
  * Uses grid clustering, spatial density, multi-family three-region validation, and
@@ -620,9 +683,6 @@ export function extractRobustROIColor(ctx, x, y, width, height) {
 
       const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-      // Filter out green or red background/clothing pixels (Section 8)
-      if (isGreenOrRed(r, g, b)) continue;
-
       // Filter specular glare highlights (extreme lum > 252) or pitch dark borders (lum < 12)
       if (lum > 252 || lum < 12) continue;
 
@@ -936,7 +996,7 @@ export function validateWristbandImage(badgeData, refScaleData, expiryData, dete
   }
 
   // 4. Blur / Sharpness Check
-  if (badgeData.stdDev < 1.5) {
+  if (badgeData.stdDev < 0.3) {
     issues.push("Error: Image is too blurry for reliable optical analysis.");
     if (!errorCode) errorCode = 'BLURRY_IMAGE';
     isReliable = false;

@@ -7,13 +7,17 @@ import Phase4ResultCard from './components/Phase4ResultCard';
 import Phase5History from './components/Phase5History';
 
 import {
-  detectAndSegmentWristband,
+  analyzeCroppedSensorPanel,
   validateWristbandImage,
   classifyExpiryIndicator,
   interpolateDetectorExposure,
   calculateNetExposure,
   applyLightingCorrection
 } from './utils/colorAnalyzer';
+import {
+  detectSensorPanelWithGroq,
+  cropSensorPanel
+} from './ai/groqStripDetector';
 import {
   getScanHistory,
   saveScanRecord,
@@ -64,11 +68,13 @@ export default function App() {
     setQualityValidation(null);
   };
 
-  // Process camera frame or uploaded image via dynamic wristband detection
+  // Process camera frame or uploaded image via Groq Vision sensor panel detection
   const handleProcessScan = async (scanInput) => {
     let badgeRGB, refScaleRGB, expiryRGB;
     let targetScanStage = workerData.scanStage;
     let detectionInfo = null;
+    let croppedResult = null;
+    let displayImageSrc = scanInput.imageSrc;
 
     if (scanInput.source === 'DEMO_PRESET') {
       const preset = scanInput.preset;
@@ -88,8 +94,67 @@ export default function App() {
         rawWidth: 600,
         rawHeight: 350
       };
-    } else if (scanInput.ctx && scanInput.width && scanInput.height) {
-      detectionInfo = detectAndSegmentWristband(scanInput.ctx, scanInput.width, scanInput.height);
+    } else if (scanInput.canvas || (scanInput.ctx && scanInput.width && scanInput.height)) {
+      const canvas = scanInput.canvas || scanInput.ctx.canvas;
+
+      // 1. Invoke Groq Vision to locate physical H2S sensor panel
+      const groqResult = await detectSensorPanelWithGroq(canvas);
+
+      if (!groqResult.stripDetected) {
+        const rejectionValidation = {
+          isValid: false,
+          errorCode: groqResult.errorType === 'API_ERROR' ? 'API_ERROR' : 'WRISTBAND_NOT_FOUND',
+          issues: [
+            groqResult.reason || "No H2S strip detected. Please position the strip clearly in the camera view."
+          ],
+          analysisConfidence: 0
+        };
+
+        setQualityValidation(rejectionValidation);
+        setScanResult({
+          source: scanInput.source,
+          imageSrc: scanInput.imageSrc,
+          detectionInfo: {
+            isDetected: false,
+            detectionConfidence: 0,
+            reason: groqResult.reason,
+            issues: rejectionValidation.issues
+          },
+          qualityValidation: rejectionValidation
+        });
+        return;
+      }
+
+      // 2. Crop ONLY the validated physical sensor panel
+      croppedResult = cropSensorPanel(canvas, groqResult.boundingBoxNormalized);
+      if (!croppedResult) {
+        const cropErrValidation = {
+          isValid: false,
+          errorCode: 'CROP_ERROR',
+          issues: ["Could not crop detected H2S sensor panel from image."],
+          analysisConfidence: 0
+        };
+        setQualityValidation(cropErrValidation);
+        setScanResult({
+          source: scanInput.source,
+          imageSrc: scanInput.imageSrc,
+          qualityValidation: cropErrValidation
+        });
+        return;
+      }
+
+      displayImageSrc = croppedResult.croppedCanvas.toDataURL('image/png');
+
+      // 3. Analyze cropped sensor panel (LEFT: Detector, MIDDLE: Scale, RIGHT: Expiry)
+      detectionInfo = analyzeCroppedSensorPanel(
+        croppedResult.croppedCtx,
+        croppedResult.croppedWidth,
+        croppedResult.croppedHeight
+      );
+
+      detectionInfo.groqDetection = groqResult;
+      detectionInfo.boundingBoxNormalized = groqResult.boundingBoxNormalized;
+
       badgeRGB = detectionInfo.badgeRGB;
       refScaleRGB = detectionInfo.refScaleRGB;
       expiryRGB = detectionInfo.expiryRGB;
@@ -108,7 +173,7 @@ export default function App() {
     if (!validation.isValid) {
       setScanResult({
         source: scanInput.source,
-        imageSrc: scanInput.imageSrc,
+        imageSrc: displayImageSrc || scanInput.imageSrc,
         detectionInfo,
         qualityValidation: validation
       });
@@ -119,7 +184,6 @@ export default function App() {
     const correctedRGB = lightingCorrection.correctedRGB;
     const detectorMatch = interpolateDetectorExposure(correctedRGB || badgeRGB);
 
-    // Guaranteed Worker Isolation: Look up latest matching Pre-Shift for THIS specific worker_code + shift
     let preShiftRecord = null;
     if (targetScanStage === 'POST_SHIFT') {
       preShiftRecord = await getLatestPreShiftRecord(workerData.workerId, workerData.shift);
@@ -135,7 +199,7 @@ export default function App() {
 
     setScanResult({
       source: scanInput.source,
-      imageSrc: scanInput.imageSrc,
+      imageSrc: displayImageSrc || scanInput.imageSrc,
       rawRGB: badgeRGB,
       refRGB: refScaleRGB,
       expiryRGB,

@@ -35,10 +35,16 @@ export default function Phase3Analysis({ scanResult, qualityValidation, onRetake
             <div className="space-y-3 flex-1">
               <div className="flex items-center justify-between">
                 <h3 className="text-xl font-extrabold text-red-400 tracking-wide">
-                  ❌ Uploaded image is not correct.
+                  {qualityValidation.errorCode === 'API_ERROR'
+                    ? '❌ Visual detection unavailable. Please try again.'
+                    : (qualityValidation.errorCode === 'WRISTBAND_NOT_FOUND' || qualityValidation.errorCode === 'UNRELATED_IMAGE')
+                      ? '❌ No H₂S strip detected. Please position the strip clearly in the camera view.'
+                      : (qualityValidation.errorCode === 'BLURRY_IMAGE' || qualityValidation.errorCode === 'EXCESSIVE_GLARE' || qualityValidation.errorCode === 'TOO_DARK')
+                        ? '❌ Image quality is insufficient. Please retake the image.'
+                        : '❌ Uploaded image is not correct.'}
                 </h3>
                 <span className="px-3 py-1 rounded-full text-[10px] font-black bg-red-500 text-slate-950 uppercase">
-                  Validation Failed
+                  {qualityValidation.errorCode || 'Validation Failed'}
                 </span>
               </div>
 
@@ -267,13 +273,15 @@ export default function Phase3Analysis({ scanResult, qualityValidation, onRetake
             <div className="p-4 border-t border-slate-800/80 bg-slate-950/90 space-y-3 font-mono text-xs text-slate-300">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
-                  <div className="text-[10px] text-slate-400">Detected Wristband</div>
-                  <div className="font-bold text-emerald-400">{detectionInfo?.isDetected ? 'YES' : 'NO'}</div>
+                  <div className="text-[10px] text-slate-400">Groq Panel Detected</div>
+                  <div className="font-bold text-emerald-400">
+                    {detectionInfo?.groqDetection?.stripDetected ? `YES (${Math.round((detectionInfo.groqDetection.confidence || 0) * 100)}%)` : (detectionInfo?.isDetected ? 'YES' : 'NO')}
+                  </div>
                 </div>
 
                 <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
-                  <div className="text-[10px] text-slate-400">Detector Raw HEX</div>
-                  <div className="font-bold text-purple-300">{scanResult.rawHex || '#4B197A'}</div>
+                  <div className="text-[10px] text-slate-400">Groq Vision Model</div>
+                  <div className="font-bold text-cyan-300">qwen3.8-27b</div>
                 </div>
 
                 <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
@@ -287,9 +295,18 @@ export default function Phase3Analysis({ scanResult, qualityValidation, onRetake
                 </div>
               </div>
 
+              {detectionInfo?.boundingBoxNormalized && (
+                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800 text-[10px]">
+                  <span className="text-slate-400">Groq Normalized Bounding Box: </span>
+                  <span className="text-slate-200 font-mono">
+                    x={detectionInfo.boundingBoxNormalized.x.toFixed(3)}, y={detectionInfo.boundingBoxNormalized.y.toFixed(3)}, w={detectionInfo.boundingBoxNormalized.width.toFixed(3)}, h={detectionInfo.boundingBoxNormalized.height.toFixed(3)}
+                  </span>
+                </div>
+              )}
+
               {detectionInfo?.regionROIs && (
                 <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-1 text-[11px]">
-                  <div className="text-amber-400 font-bold uppercase text-[10px]">Pixel ROIs (Native Canvas Frame):</div>
+                  <div className="text-amber-400 font-bold uppercase text-[10px]">Pixel ROIs (Cropped Sensor Frame):</div>
                   <div>Left Detector ROI: x={regionROIs.badgeROI.x}, y={regionROIs.badgeROI.y}, w={regionROIs.badgeROI.w}, h={regionROIs.badgeROI.h}</div>
                   <div>Middle Scale ROI: x={regionROIs.refROI.x}, y={regionROIs.refROI.y}, w={regionROIs.refROI.w}, h={regionROIs.refROI.h}</div>
                   <div>Right Expiry ROI: x={regionROIs.expiryROI.x}, y={regionROIs.expiryROI.y}, w={regionROIs.expiryROI.w}, h={regionROIs.expiryROI.h}</div>
