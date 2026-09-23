@@ -1,9 +1,10 @@
 import React from 'react';
 import { ShieldAlert, Activity, History, QrCode, FileText, Database } from 'lucide-react';
-import { supabase } from '../supabase';
+import { getDbConnectionStatus } from '../utils/storage';
 
 export default function Header({ activeTab, setActiveTab, activeWorker }) {
-  const isSupabaseConnected = Boolean(supabase);
+  const dbStatus = getDbConnectionStatus();
+  const isConnected = dbStatus === 'CONNECTED';
 
   return (
     <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-50 backdrop-blur-md bg-slate-900/90 shadow-xl">
@@ -18,13 +19,13 @@ export default function Header({ activeTab, setActiveTab, activeWorker }) {
               <h1 className="text-lg font-extrabold tracking-wider text-white">
                 SULFIDE<span className="text-amber-400">SENTINELS</span>
               </h1>
-              {isSupabaseConnected ? (
+              {isConnected ? (
                 <span className="inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  <Database className="w-3 h-3" /> Supabase DB
+                  <Database className="w-3 h-3" /> DB: SUPABASE CONNECTED
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-amber-500/30">
-                  Local Cache
+                  <Database className="w-3 h-3 text-amber-400" /> DB: OFFLINE / LOCAL CACHE
                 </span>
               )}
             </div>

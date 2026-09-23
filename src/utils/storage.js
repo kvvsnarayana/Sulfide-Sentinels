@@ -8,7 +8,8 @@ import {
   clearScanRecordsFromDb,
   getLatestPreShiftRecord,
   getOrCreateWorker,
-  migrateLocalLogsToSupabase
+  migrateLocalLogsToSupabase,
+  getDbConnectionStatus
 } from './dbService';
 
 export async function getScanHistory() {
@@ -26,5 +27,6 @@ export async function clearScanHistory() {
 export {
   getLatestPreShiftRecord,
   getOrCreateWorker,
-  migrateLocalLogsToSupabase
+  migrateLocalLogsToSupabase,
+  getDbConnectionStatus
 };

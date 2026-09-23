@@ -612,11 +612,15 @@ export function classifyExpiryIndicator(expiryRGB) {
   }
 
   const isExpired = bestMatch.status === 'INVALID';
+  let formattedStatus = 'UNCLASSIFIED';
+  if (bestMatch.hex === VALIDITY_REFERENCE_COLORS.valid100) formattedStatus = 'VALID_100';
+  else if (bestMatch.hex === VALIDITY_REFERENCE_COLORS.valid50) formattedStatus = 'VALID_50';
+  else if (isExpired) formattedStatus = 'INVALID';
 
   return {
     isClassified: true,
     isExpired,
-    status: bestMatch.status,
+    status: formattedStatus,
     confidence: bestMatch.confidence,
     matchedHex: bestMatch.hex,
     detectedHex: expiryRGB.hex,
@@ -709,6 +713,37 @@ export function interpolateDetectorExposure(detectorRGB) {
   };
 }
 
+/**
+ * Calculates real optical sharpness using 2D Laplacian operator variance over grayscale pixels. (Phase 11)
+ */
+export function calculateLaplacianVariance(imageData) {
+  if (!imageData || !imageData.data || imageData.width <= 2 || imageData.height <= 2) return 0;
+  const { data, width, height } = imageData;
+  const gray = new Float32Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+  }
+  let sum = 0, count = 0;
+  const lap = new Float32Array((width - 2) * (height - 2));
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const val = gray[(y - 1) * width + x] + gray[(y + 1) * width + x] +
+                  gray[y * width + (x - 1)] + gray[y * width + (x + 1)] -
+                  4 * gray[y * width + x];
+      lap[count++] = val;
+      sum += val;
+    }
+  }
+  if (count === 0) return 0;
+  const mean = sum / count;
+  let varSum = 0;
+  for (let i = 0; i < count; i++) {
+    const diff = lap[i] - mean;
+    varSum += diff * diff;
+  }
+  return varSum / count;
+}
+
 // ==========================================
 // IMAGE VALIDATION & ANALYSIS CONFIDENCE
 // ==========================================
@@ -716,23 +751,32 @@ export function interpolateDetectorExposure(detectorRGB) {
 export function validateWristbandImage(badgeData, refScaleData, expiryData, detectionInfo) {
   const issues = [];
   let isReliable = true;
+  let errorCode = null;
 
   if (detectionInfo && !detectionInfo.isDetected) {
+    const rawW = detectionInfo.rawWidth || 0;
+    if (rawW > 0 && rawW < 200) {
+      errorCode = 'LOW_RESOLUTION';
+    } else {
+      errorCode = 'WRISTBAND_NOT_FOUND';
+    }
     return {
       isValid: false,
+      errorCode,
       issues: detectionInfo.issues && detectionInfo.issues.length > 0
         ? detectionInfo.issues
         : [
             "Uploaded image is not correct.",
             "Please capture a clear image showing the complete H₂S detector wristband."
           ],
-      analysisConfidence: detectionInfo.detectionConfidence || 0
+      analysisConfidence: detectionInfo.detectionConfidence ?? 0
     };
   }
 
   if (!badgeData || !refScaleData || !expiryData) {
     return {
       isValid: false,
+      errorCode: 'UNRELATED_IMAGE',
       issues: [
         "Uploaded image is not correct.",
         "Please capture a clear image showing the complete H₂S detector wristband."
@@ -741,37 +785,31 @@ export function validateWristbandImage(badgeData, refScaleData, expiryData, dete
     };
   }
 
-  // 1. Check ROI presence
-  if (badgeData.pixelCount < 8) {
-    issues.push("Error: Left H₂S detector region not detected.");
-    isReliable = false;
-  }
-
-  if (refScaleData.pixelCount < 8) {
-    issues.push("Error: Middle reference color scale not detected.");
-    isReliable = false;
-  }
-
-  if (expiryData.pixelCount < 4) {
-    issues.push("Error: Right expiry indicator not visible.");
+  // 1. Check ROI presence & partial wristband
+  if (badgeData.pixelCount < 8 || refScaleData.pixelCount < 8 || expiryData.pixelCount < 4) {
+    issues.push("Error: Partial wristband or incomplete regions detected.");
+    errorCode = 'PARTIAL_WRISTBAND';
     isReliable = false;
   }
 
   // 2. Glare Check
   if (badgeData.luminance > 242 || refScaleData.luminance > 245) {
-    issues.push("Error: Image quality is too poor due to excessive glare reflection.");
+    issues.push("Error: Excessive glare reflection detected on detector pad.");
+    if (!errorCode) errorCode = 'EXCESSIVE_GLARE';
     isReliable = false;
   }
 
   // 3. Underexposure / Lighting Check
   if (badgeData.luminance < 20 || refScaleData.luminance < 20) {
-    issues.push("Error: Lighting is insufficient for reliable analysis.");
+    issues.push("Error: Severe darkness / insufficient lighting for optical analysis.");
+    if (!errorCode) errorCode = 'TOO_DARK';
     isReliable = false;
   }
 
   // 4. Blur / Sharpness Check
   if (badgeData.stdDev < 1.5) {
     issues.push("Error: Image is too blurry for reliable optical analysis.");
+    if (!errorCode) errorCode = 'BLURRY_IMAGE';
     isReliable = false;
   }
 
@@ -787,6 +825,7 @@ export function validateWristbandImage(badgeData, refScaleData, expiryData, dete
 
   return {
     isValid: isReliable && issues.length === 0,
+    errorCode,
     issues,
     analysisConfidence
   };
@@ -802,8 +841,25 @@ export function calculateNetExposure({
   postShiftTimestamp,
   expiryResult
 }) {
-  const postPpm = postShiftDetector.ppm;
-  const postPercentage = postShiftDetector.percentage;
+  if (!postShiftDetector) {
+    return {
+      postPpm: 0,
+      postPercentage: 0,
+      prePpm: 0,
+      prePercentage: 0,
+      netPpm: 0,
+      exposureDurationHours: null,
+      dosePpmH: null,
+      finalStatus: "ANALYSIS_INCOMPLETE",
+      statusColor: "#64748B",
+      badgeClass: "bg-slate-500/20 text-slate-400 border-slate-500/40",
+      recommendation: "Optical analysis incomplete.",
+      preTimestamp: null
+    };
+  }
+
+  const postPpm = postShiftDetector.ppm ?? 0;
+  const postPercentage = postShiftDetector.percentage ?? 0;
 
   let prePpm = 0.0;
   let prePercentage = 0.0;
@@ -812,8 +868,8 @@ export function calculateNetExposure({
   let dosePpmH = null;
 
   if (preShiftRecord && preShiftRecord.timestamp) {
-    prePpm = preShiftRecord.detectorPpm !== undefined ? preShiftRecord.detectorPpm : 0.0;
-    prePercentage = preShiftRecord.detectorPercentage !== undefined ? preShiftRecord.detectorPercentage : 0.0;
+    prePpm = preShiftRecord.detectorPpm !== undefined && preShiftRecord.detectorPpm !== null ? preShiftRecord.detectorPpm : 0.0;
+    prePercentage = preShiftRecord.detectorPercentage !== undefined && preShiftRecord.detectorPercentage !== null ? preShiftRecord.detectorPercentage : 0.0;
     preTimestamp = preShiftRecord.timestamp;
 
     const tPre = new Date(preShiftRecord.timestamp).getTime();
@@ -837,27 +893,32 @@ export function calculateNetExposure({
     dosePpmH = 0.0;
   }
 
-  // Determine Final Safety Status
+  // Determine Project-Defined Optical Status (Phases 14, 16 & 17)
   let finalStatus = "SAFE";
   let statusColor = "#10B981";
   let badgeClass = "bg-emerald-500/20 text-emerald-400 border-emerald-500/40";
-  let recommendation = "Low estimated H₂S exposure dose. Continue standard operations.";
+  let recommendation = "Project-defined optical reading within normal parameters. Continue standard operations.";
 
-  if (expiryResult && expiryResult.isExpired) {
+  if (expiryResult && (expiryResult.status === 'UNCLASSIFIED' || !expiryResult.isClassified)) {
+    finalStatus = "UNCLASSIFIED";
+    statusColor = "#94A3B8";
+    badgeClass = "bg-slate-500/20 text-slate-300 border-slate-500/40";
+    recommendation = "Expiry indicator could not be reliably classified. Inspect wristband visually.";
+  } else if (expiryResult && expiryResult.isExpired) {
     finalStatus = "INVALID STRIP";
     statusColor = "#EF4444";
     badgeClass = "bg-red-500/20 text-red-400 border-red-500/40";
-    recommendation = "🚨 STRIP INVALID: Expiry indicator shows that the detector strip is not valid. Replace dosimeter immediately.";
+    recommendation = "🚨 STRIP INVALID: Expiry indicator shows that the detector strip is not valid. Replace dosimeter before shift.";
   } else if (dosePpmH !== null && dosePpmH > 50) {
     finalStatus = "CRITICAL";
     statusColor = "#EF4444";
     badgeClass = "bg-red-500/20 text-red-400 border-red-500/40";
-    recommendation = "CRITICAL DANGER! Estimated exposure dose exceeded threshold! Evacuate area immediately.";
+    recommendation = "PROJECT-DEFINED EXPOSURE ALERT: Estimated time-integrated dose exceeded 50 ppm·h. Follow site safety procedures.";
   } else if (dosePpmH !== null && dosePpmH > 10) {
     finalStatus = "WARNING";
     statusColor = "#F59E0B";
     badgeClass = "bg-amber-500/20 text-amber-400 border-amber-500/40";
-    recommendation = "ELEVATED EXPOSURE WARNING: H₂S concentration detected. Inspect area ventilation.";
+    recommendation = "ELEVATED EXPOSURE NOTICE: Estimated time-integrated dose between 10-50 ppm·h. Inspect area ventilation.";
   }
 
   return {

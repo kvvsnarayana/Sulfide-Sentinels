@@ -7,6 +7,7 @@ export default function Phase4ResultCard({ workerData, scanResult, onSaveRecord,
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [saveStatusMsg, setSaveStatusMsg] = useState(null);
 
   if (!scanResult) return null;
 
@@ -46,6 +47,7 @@ export default function Phase4ResultCard({ workerData, scanResult, onSaveRecord,
     if (isSaving || savedSuccess) return;
     setIsSaving(true);
     setSaveError(null);
+    setSaveStatusMsg(null);
 
     try {
       const recordTimestamp = new Date().toISOString();
@@ -56,35 +58,46 @@ export default function Phase4ResultCard({ workerData, scanResult, onSaveRecord,
 
       let refMatchText = detectorMatch?.isExactMatch
         ? `Exact: ${detectorMatch.matchedHex} (${detectorMatch.percentage}%)`
-        : `Between ${detectorMatch?.lowerSwatch?.hex} (${detectorMatch?.lowerSwatch?.percentage}%) and ${detectorMatch?.upperSwatch?.hex} (${detectorMatch?.upperSwatch?.percentage}%)`;
+        : `Between ${detectorMatch?.lowerSwatch?.hex ?? 'N/A'} (${detectorMatch?.lowerSwatch?.percentage ?? 0}%) and ${detectorMatch?.upperSwatch?.hex ?? 'N/A'} (${detectorMatch?.upperSwatch?.percentage ?? 0}%)`;
 
-      await onSaveRecord({
+      const result = await onSaveRecord({
         workerId: workerData.workerId,
         shift: workerData.shift,
         scanStage,
         timestamp: recordTimestamp,
         dateFormatted: formattedTime,
-        detectorHex: detectorMatch?.detectedHex || scanResult.rawRGB?.hex,
-        detectorPercentage: detectorMatch?.percentage || 0,
-        detectorPpm: detectorMatch?.ppm || 0,
+        detectorHex: detectorMatch?.detectedHex ?? scanResult.rawRGB?.hex ?? null,
+        detectorPercentage: detectorMatch?.percentage ?? null,
+        detectorPpm: detectorMatch?.ppm ?? null,
         referenceMatch: refMatchText,
-        referenceLowerHex: detectorMatch?.lowerSwatch?.hex || null,
-        referenceLowerPercentage: detectorMatch?.lowerSwatch?.percentage || null,
-        referenceUpperHex: detectorMatch?.upperSwatch?.hex || null,
-        referenceUpperPercentage: detectorMatch?.upperSwatch?.percentage || null,
-        expiryHex: expiryEval?.detectedHex || scanResult.expiryRGB?.hex,
-        expiryStatus: expiryEval?.status || 'VALID',
-        expiryConfidence: expiryEval?.confidence || 100,
-        analysisConfidence: qualityValidation?.analysisConfidence || 90,
-        exposureDurationHours: scanStage === 'POST_SHIFT' ? netExposure?.exposureDurationHours : null,
-        netPpm: scanStage === 'POST_SHIFT' ? netExposure?.netPpm : null,
-        dosePpmH: scanStage === 'POST_SHIFT' ? netExposure?.dosePpmH : null,
-        finalStatus: netExposure?.finalStatus || (expiryEval?.isExpired ? 'INVALID STRIP' : 'SAFE'),
+        referenceLowerHex: detectorMatch?.lowerSwatch?.hex ?? null,
+        referenceLowerPercentage: detectorMatch?.lowerSwatch?.percentage ?? null,
+        referenceUpperHex: detectorMatch?.upperSwatch?.hex ?? null,
+        referenceUpperPercentage: detectorMatch?.upperSwatch?.percentage ?? null,
+        expiryHex: expiryEval?.detectedHex ?? scanResult.expiryRGB?.hex ?? null,
+        expiryStatus: expiryEval?.status ?? 'UNCLASSIFIED',
+        expiryConfidence: expiryEval?.confidence ?? null,
+        analysisConfidence: qualityValidation?.analysisConfidence ?? null,
+        exposureDurationHours: scanStage === 'POST_SHIFT' ? netExposure?.exposureDurationHours ?? null : null,
+        netPpm: scanStage === 'POST_SHIFT' ? netExposure?.netPpm ?? null : null,
+        dosePpmH: scanStage === 'POST_SHIFT' ? netExposure?.dosePpmH ?? null : null,
+        finalStatus: netExposure?.finalStatus ?? (expiryEval?.isExpired ? 'INVALID STRIP' : 'UNCLASSIFIED'),
         notes: notes.trim() || (scanStage === 'PRE_SHIFT' ? 'Pre-shift baseline scan' : 'Post-shift exposure scan')
       });
 
-      setSavedSuccess(true);
-      confetti({ particleCount: 50, spread: 60, origin: { y: 0.7 } });
+      if (result?.cloudSaved) {
+        setSavedSuccess(true);
+        setSaveStatusMsg('RECORD SAVED TO SUPABASE DB!');
+        confetti({ particleCount: 50, spread: 60, origin: { y: 0.7 } });
+      } else if (result?.localSaved) {
+        setSavedSuccess(true);
+        setSaveStatusMsg('SAVED TO LOCAL CACHE (Cloud Offline)');
+        setSaveError('Cloud save unavailable. Record saved to local cache.');
+      } else {
+        setSavedSuccess(true);
+        setSaveStatusMsg('RECORD SAVED TO LOGS');
+        confetti({ particleCount: 50, spread: 60, origin: { y: 0.7 } });
+      }
     } catch (err) {
       console.error('Failed to save scan record:', err);
       setSaveError(err.message || 'Unable to save scan. Please check database connection.');
@@ -301,7 +314,7 @@ export default function Phase4ResultCard({ workerData, scanResult, onSaveRecord,
           ) : savedSuccess ? (
             <>
               <CheckCircle2 className="w-4 h-4" />
-              <span>RECORD SAVED TO SUPABASE DB!</span>
+              <span>{saveStatusMsg || 'RECORD SAVED TO SUPABASE DB!'}</span>
             </>
           ) : (
             <>

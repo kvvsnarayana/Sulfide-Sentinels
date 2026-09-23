@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { History, Download, Trash2, Search, Filter, ShieldCheck, AlertTriangle, ShieldAlert, PlayCircle, StopCircle, Eye, X } from 'lucide-react';
+import { Download, Trash2, Search, Filter, ShieldCheck, AlertTriangle, ShieldAlert, PlayCircle, StopCircle, Eye, X } from 'lucide-react';
 import { exportHistoryToCSV } from '../utils/exportCsv';
 
 export default function Phase5History({ logs, onClearHistory }) {
@@ -41,14 +41,15 @@ export default function Phase5History({ logs, onClearHistory }) {
           {logs.length > 0 && (
             <button
               onClick={() => {
-                if (window.confirm("Are you sure you want to clear all local audit records?")) {
+                if (window.confirm("Are you sure you want to clear your local display cache? Cloud database records will remain safely preserved.")) {
                   onClearHistory();
                 }
               }}
-              className="bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 px-3 py-2 rounded-xl text-xs font-semibold border border-slate-700 hover:border-red-500/40 transition-all flex items-center space-x-1.5"
+              title="Clears local UI display cache. Cloud database records remain safe."
+              className="bg-slate-800 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 px-3 py-2 rounded-xl text-xs font-semibold border border-slate-700 hover:border-amber-500/40 transition-all flex items-center space-x-1.5"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear History</span>
+              <span>Clear Local Cache</span>
             </button>
           )}
 

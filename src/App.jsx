@@ -26,7 +26,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('setup');
 
   const [workerData, setWorkerData] = useState({
-    workerId: 'W-1042',
+    workerId: '',
     shift: 'Morning (06:00 - 14:00)',
     scanStage: 'PRE_SHIFT'
   });

@@ -16,33 +16,26 @@ export default function Phase2CameraScan({ workerData, onProcessScan, onResetTem
   const [stagedImageSrc, setStagedImageSrc] = useState(null);
   const [stagedCanvasData, setStagedCanvasData] = useState(null);
   const [selectedDemoBadge, setSelectedDemoBadge] = useState(null);
-
-  // Initialize/stop camera on mode change
-  useEffect(() => {
-    if (inputMode === 'CAMERA') {
-      startCamera();
-    } else {
-      stopCamera();
-    }
-    return () => stopCamera();
-  }, [inputMode]);
-
-  // Clean up object URLs on unmount/reset
-  useEffect(() => {
-    return () => {
-      if (stagedImageSrc && stagedImageSrc.startsWith('blob:')) {
-        URL.revokeObjectURL(stagedImageSrc);
-      }
-    };
-  }, [stagedImageSrc]);
+  const [showDebugPresets, setShowDebugPresets] = useState(false);
 
   /**
-   * Mobile-Friendly Camera Fallback Chain
+   * Stop active camera stream and reset video element
+   */
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const tracks = videoRef.current.srcObject.getTracks();
+      tracks.forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setStreamActive(false);
+    setIsCameraReady(false);
+  };
+
+  /**
+   * Explicit manual camera initialization (used by Retry button)
    */
   const startCamera = async () => {
-    setCameraError('');
-    setIsCameraReady(false);
-
+    stopCamera();
     const constraintList = [
       { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
       { video: { facingMode: { ideal: "environment" } } },
@@ -66,6 +59,7 @@ export default function Phase2CameraScan({ workerData, onProcessScan, onResetTem
       try {
         await videoRef.current.play();
         setStreamActive(true);
+        setCameraError('');
       } catch (playErr) {
         console.warn("[SULFIDE SENTINELS CAMERA] Video play error:", playErr);
         setCameraError('Camera access is unavailable. Please allow camera permission or upload an image.');
@@ -78,15 +72,87 @@ export default function Phase2CameraScan({ workerData, onProcessScan, onResetTem
     }
   };
 
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
-      tracks.forEach(track => track.stop());
-      videoRef.current.srcObject = null;
+  // Synchronize media stream hardware lifecycle on mode change
+  useEffect(() => {
+    const videoNode = videoRef.current;
+
+    if (inputMode !== 'CAMERA') {
+      if (videoNode && videoNode.srcObject) {
+        videoNode.srcObject.getTracks().forEach(t => t.stop());
+        videoNode.srcObject = null;
+      }
+      return;
     }
-    setStreamActive(false);
-    setIsCameraReady(false);
-  };
+
+    let isMounted = true;
+
+    async function initStream() {
+      const constraintList = [
+        { video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+        { video: { facingMode: { ideal: "environment" } } },
+        { video: true }
+      ];
+
+      let stream = null;
+      let lastError = null;
+
+      for (const constraints of constraintList) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          if (stream) break;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+
+      if (!isMounted) {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      if (stream && videoNode) {
+        videoNode.srcObject = stream;
+        try {
+          await videoNode.play();
+          if (isMounted) {
+            setStreamActive(true);
+            setCameraError('');
+          }
+        } catch (playErr) {
+          console.warn("[SULFIDE SENTINELS CAMERA] Video play error:", playErr);
+          if (isMounted) {
+            setCameraError('Camera access is unavailable. Please allow camera permission or upload an image.');
+            setStreamActive(false);
+          }
+        }
+      } else {
+        console.warn("[SULFIDE SENTINELS CAMERA] All camera constraints failed:", lastError);
+        if (isMounted) {
+          setCameraError('Camera access is unavailable. Please allow camera permission or upload an image.');
+          setStreamActive(false);
+        }
+      }
+    }
+
+    initStream();
+
+    return () => {
+      isMounted = false;
+      if (videoNode && videoNode.srcObject) {
+        videoNode.srcObject.getTracks().forEach(t => t.stop());
+        videoNode.srcObject = null;
+      }
+    };
+  }, [inputMode]);
+
+  // Clean up object URLs on unmount/reset
+  useEffect(() => {
+    return () => {
+      if (stagedImageSrc && stagedImageSrc.startsWith('blob:')) {
+        URL.revokeObjectURL(stagedImageSrc);
+      }
+    };
+  }, [stagedImageSrc]);
 
   const handleVideoMetadataLoaded = () => {
     checkCameraReadyState();
@@ -388,41 +454,55 @@ export default function Phase2CameraScan({ workerData, onProcessScan, onResetTem
         </div>
       )}
 
-      {/* Demo Presets */}
-      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-3">
-        <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-          Calibrated Test Presets
-        </h4>
-        <p className="text-xs text-slate-400">
-          Select any reference preset below to test CIELAB color matching, continuous interpolation, and expiry alerts:
-        </p>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {DEMO_PRESET_BADGES.map((preset) => (
-            <button
-              key={preset.id}
-              onClick={() => handleSelectDemoPreset(preset)}
-              className={`text-left p-3 rounded-xl border text-xs font-medium transition-all flex items-center justify-between ${
-                selectedDemoBadge === preset.id
-                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-300'
-                  : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/80 hover:text-white'
-              }`}
-            >
-              <div>
-                <div className="font-bold flex items-center space-x-2">
-                  <span>{preset.name}</span>
-                  <span
-                    className="w-3 h-3 rounded-full border border-white/20"
-                    style={{ backgroundColor: preset.badgeRGB.hex }}
-                  ></span>
-                </div>
-                <div className="text-[10px] text-slate-400 mt-0.5">{preset.description}</div>
-              </div>
-              {selectedDemoBadge === preset.id && <Check className="w-4 h-4 text-amber-400 shrink-0 ml-2" />}
-            </button>
-          ))}
+      {/* Demo Presets (Phase 19: Hidden behind Debug toggle) */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-amber-400" />
+            Developer Debug Test Presets
+          </h4>
+          <button
+            type="button"
+            onClick={() => setShowDebugPresets(!showDebugPresets)}
+            className="text-[11px] font-bold text-slate-400 hover:text-amber-400 bg-slate-950 px-3 py-1 rounded-lg border border-slate-800 transition-all"
+          >
+            {showDebugPresets ? 'Hide Debug Presets' : 'Show Debug Presets'}
+          </button>
         </div>
+
+        {showDebugPresets && (
+          <div className="space-y-3 pt-2 border-t border-slate-800">
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs">
+              ⚠️ <strong>DEVELOPMENT DEBUG MODE:</strong> Presets are synthetic images for UI testing only and will be tagged as DEBUG scans.
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {DEMO_PRESET_BADGES.map((preset) => (
+                <button
+                  key={preset.id}
+                  onClick={() => handleSelectDemoPreset(preset)}
+                  className={`text-left p-3 rounded-xl border text-xs font-medium transition-all flex items-center justify-between ${
+                    selectedDemoBadge === preset.id
+                      ? 'bg-amber-500/20 border-amber-500/60 text-amber-300'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/80 hover:text-white'
+                  }`}
+                >
+                  <div>
+                    <div className="font-bold flex items-center space-x-2">
+                      <span>{preset.name}</span>
+                      <span
+                        className="w-3 h-3 rounded-full border border-white/20"
+                        style={{ backgroundColor: preset.badgeRGB.hex }}
+                      ></span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">{preset.description}</div>
+                  </div>
+                  {selectedDemoBadge === preset.id && <Check className="w-4 h-4 text-amber-400 shrink-0 ml-2" />}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

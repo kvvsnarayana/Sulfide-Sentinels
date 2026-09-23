@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { User, Clock, ShieldCheck, AlertCircle, ArrowRight, PlayCircle, StopCircle } from 'lucide-react';
 
 export default function Phase1Setup({ workerData, setWorkerData, onCompleteSetup, onResetTemporaryScan }) {
-  const [workerId, setWorkerId] = useState(workerData?.workerId || 'W-1042');
+  const [workerId, setWorkerId] = useState(workerData?.workerId || '');
   const [shift, setShift] = useState(workerData?.shift || 'Morning (06:00 - 14:00)');
   const [scanStage, setScanStage] = useState(workerData?.scanStage || 'PRE_SHIFT');
   const [checklist, setChecklist] = useState({
