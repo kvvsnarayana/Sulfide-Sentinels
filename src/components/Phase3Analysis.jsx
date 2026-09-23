@@ -124,15 +124,15 @@ export default function Phase3Analysis({ scanResult, qualityValidation, onRetake
               className="w-full h-full object-contain"
             />
 
-            {/* Overlaid Detected Regions (LEFT, MIDDLE, RIGHT) */}
+            {/* Overlaid Detected Regions (H2S Detector, Reference Scale, Expiry Indicator) */}
             <div className="absolute inset-0 pointer-events-none">
-              {/* LEFT: H2S Detector */}
+              {/* H2S Detector Pad */}
               <div
                 style={getOverlayStyle(regionROIs.badgeROI)}
                 className="absolute border-2 border-purple-400 bg-purple-500/10 rounded-lg flex items-start p-1 transition-all shadow-[0_0_12px_rgba(192,132,252,0.3)]"
               >
                 <span className="bg-slate-950/90 text-purple-300 text-[8px] font-black px-1 py-0.5 rounded border border-purple-500/50 shadow uppercase tracking-tighter">
-                  LEFT: H₂S DETECTOR
+                  {regionROIs.badgeROI.x <= regionROIs.expiryROI.x ? 'LEFT: H₂S DETECTOR' : 'RIGHT: H₂S DETECTOR'}
                 </span>
               </div>
 
@@ -146,13 +146,13 @@ export default function Phase3Analysis({ scanResult, qualityValidation, onRetake
                 </span>
               </div>
 
-              {/* RIGHT: Expiry Indicator */}
+              {/* Expiry Indicator */}
               <div
                 style={getOverlayStyle(regionROIs.expiryROI)}
                 className="absolute border-2 border-emerald-400 bg-emerald-500/10 rounded-lg flex items-start p-1 transition-all shadow-[0_0_12px_rgba(52,211,153,0.3)]"
               >
                 <span className="bg-slate-950/90 text-emerald-300 text-[8px] font-black px-1 py-0.5 rounded border border-emerald-500/50 shadow uppercase tracking-tighter">
-                  RIGHT: EXPIRY INDICATOR
+                  {regionROIs.expiryROI.x >= regionROIs.badgeROI.x ? 'RIGHT: EXPIRY INDICATOR' : 'LEFT: EXPIRY INDICATOR'}
                 </span>
               </div>
             </div>

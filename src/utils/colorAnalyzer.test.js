@@ -129,3 +129,124 @@ test('Phase 14: Unclassified Expiry Preservation', () => {
 
   assert.equal(net.finalStatus, 'UNCLASSIFIED');
 });
+
+function createMockContext(width, height, drawFn) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    data[i * 4] = 120;
+    data[i * 4 + 1] = 120;
+    data[i * 4 + 2] = 120;
+    data[i * 4 + 3] = 255;
+  }
+
+  function setPixel(x, y, r, g, b, a = 255) {
+    if (x >= 0 && x < width && y >= 0 && y < height) {
+      const idx = (y * width + x) * 4;
+      data[idx] = r;
+      data[idx + 1] = g;
+      data[idx + 2] = b;
+      data[idx + 3] = a;
+    }
+  }
+
+  function fillRect(rx, ry, rw, rh, r, g, b, a = 255) {
+    for (let y = Math.floor(ry); y < Math.floor(ry + rh); y++) {
+      for (let x = Math.floor(rx); x < Math.floor(rx + rw); x++) {
+        setPixel(x, y, r, g, b, a);
+      }
+    }
+  }
+
+  if (drawFn) drawFn({ setPixel, fillRect });
+
+  return {
+    getImageData: (x, y, w, h) => {
+      const subData = new Uint8ClampedArray(w * h * 4);
+      for (let subY = 0; subY < h; subY++) {
+        for (let subX = 0; subX < w; subX++) {
+          const origX = Math.floor(x + subX);
+          const origY = Math.floor(y + subY);
+          const subIdx = (subY * w + subX) * 4;
+          if (origX >= 0 && origX < width && origY >= 0 && origY < height) {
+            const origIdx = (origY * width + origX) * 4;
+            subData[subIdx] = data[origIdx];
+            subData[subIdx + 1] = data[origIdx + 1];
+            subData[subIdx + 2] = data[origIdx + 2];
+            subData[subIdx + 3] = data[origIdx + 3];
+          }
+        }
+      }
+      return { data: subData, width: w, height: h };
+    }
+  };
+}
+
+test('Phase 10 & 17: Physical Wristband Rejection of Non-Wristband Images', async () => {
+  const { detectAndSegmentWristband } = await import('./colorAnalyzer.js');
+
+  // 1. Person photo (skin tones + background, no wristband) -> REJECT
+  const personCtx = createMockContext(200, 200, ({ fillRect }) => {
+    fillRect(40, 40, 100, 100, 210, 160, 130); // Skin tone
+    fillRect(20, 20, 160, 30, 80, 50, 40);    // Hair / clothing
+  });
+  const resPerson = detectAndSegmentWristband(personCtx, 200, 200);
+  assert.equal(resPerson.isDetected, false);
+  assert.equal(resPerson.detectionConfidence, 0);
+
+  // 2. Single purple object -> REJECT
+  const purpleCtx = createMockContext(200, 200, ({ fillRect }) => {
+    fillRect(50, 50, 80, 60, 75, 25, 122); // Purple mug (#4B197A)
+  });
+  const resPurple = detectAndSegmentWristband(purpleCtx, 200, 200);
+  assert.equal(resPurple.isDetected, false);
+
+  // 3. Single yellow object -> REJECT
+  const yellowCtx = createMockContext(200, 200, ({ fillRect }) => {
+    fillRect(50, 50, 80, 60, 230, 194, 41); // Yellow book (#E6C229)
+  });
+  const resYellow = detectAndSegmentWristband(yellowCtx, 200, 200);
+  assert.equal(resYellow.isDetected, false);
+
+  // 4. Single blue object -> REJECT
+  const blueCtx = createMockContext(200, 200, ({ fillRect }) => {
+    fillRect(50, 50, 80, 60, 33, 95, 154); // Blue poster (#215F9A)
+  });
+  const resBlue = detectAndSegmentWristband(blueCtx, 200, 200);
+  assert.equal(resBlue.isDetected, false);
+
+  // 5. Partial wristband (only ref scale, missing expiry indicator) -> REJECT
+  const partialCtx = createMockContext(200, 200, ({ fillRect }) => {
+    fillRect(30, 80, 40, 30, 75, 25, 122);  // Detector pad (#4B197A)
+    fillRect(70, 80, 50, 30, 147, 127, 121); // Ref scale (#937F79)
+  });
+  const resPartial = detectAndSegmentWristband(partialCtx, 200, 200);
+  assert.equal(resPartial.isDetected, false);
+});
+
+test('Phase 17: Valid Complete Wristband Detection & Orientation', async () => {
+  const { detectAndSegmentWristband } = await import('./colorAnalyzer.js');
+
+  // Complete Valid Horizontal Wristband: Detector pad (left) + Ref Scale (mid) + Expiry (right)
+  const validHorizCtx = createMockContext(240, 160, ({ fillRect }) => {
+    fillRect(20, 60, 50, 35, 75, 25, 122);   // Left: Detector Pad (#4B197A)
+    fillRect(70, 60, 60, 35, 147, 127, 121); // Middle: Ref Scale (#937F79)
+    fillRect(130, 60, 40, 35, 33, 95, 154);  // Right: Expiry (#215F9A)
+  });
+
+  const resValid = detectAndSegmentWristband(validHorizCtx, 240, 160);
+  assert.equal(resValid.isDetected, true);
+  assert.ok(resValid.detectionConfidence > 0);
+  assert.ok(resValid.regionROIs.badgeROI.x < resValid.regionROIs.expiryROI.x, 'Detector ROI should be to the left of Expiry ROI');
+
+  // Complete Reversed Wristband: Expiry (left) + Ref Scale (mid) + Detector pad (right)
+  const reversedCtx = createMockContext(240, 160, ({ fillRect }) => {
+    fillRect(20, 60, 40, 35, 33, 95, 154);   // Left: Expiry (#215F9A)
+    fillRect(60, 60, 60, 35, 147, 127, 121); // Middle: Ref Scale (#937F79)
+    fillRect(120, 60, 50, 35, 75, 25, 122);  // Right: Detector Pad (#4B197A)
+  });
+
+  const resReversed = detectAndSegmentWristband(reversedCtx, 240, 160);
+  assert.equal(resReversed.isDetected, true);
+  assert.ok(resReversed.regionROIs.badgeROI.x > resReversed.regionROIs.expiryROI.x, 'In reversed wristband, Detector ROI should be to the right of Expiry ROI');
+});
+

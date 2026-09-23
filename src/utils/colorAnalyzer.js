@@ -27,8 +27,8 @@ export const EXACT_REFERENCE_SWATCHES = H2S_REFERENCE_COLORS.map(s => ({
 // Exact Expiry Indicator Reference Swatches
 export const EXPIRY_REFERENCE_SWATCHES = [
   { hex: VALIDITY_REFERENCE_COLORS.valid100, status: 'VALID', confidence: 100, label: 'Dark Blue (Valid 100%)' },
-  { hex: VALIDITY_REFERENCE_COLORS.valid50,  status: 'VALID', confidence: 50,  label: 'Light Blue (Valid 50%)' },
-  { hex: VALIDITY_REFERENCE_COLORS.invalid,  status: 'INVALID', confidence: 0, label: 'White (NOT VALID)' }
+  { hex: VALIDITY_REFERENCE_COLORS.valid50, status: 'VALID', confidence: 50, label: 'Light Blue (Valid 50%)' },
+  { hex: VALIDITY_REFERENCE_COLORS.invalid, status: 'INVALID', confidence: 0, label: 'White (NOT VALID)' }
 ];
 
 // ==========================================
@@ -117,7 +117,6 @@ export function isStripCandidateColor(r, g, b) {
   const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
   if (isBackgroundOrNoise(r, g, b, lum)) return { isCandidate: false, family: null };
-  if (isSkinTone(r, g, b)) return { isCandidate: false, family: null };
 
   // 1. Purple/Violet detector pad or reference swatch (#4B197A, #7047B5)
   if (h >= 240 && h <= 305 && s >= 0.28 && v >= 0.15) {
@@ -129,7 +128,7 @@ export function isStripCandidateColor(r, g, b) {
     return { isCandidate: true, family: 'YELLOW_ORANGE' };
   }
 
-  // 3. Mauve/Brown swatches (#937F79)
+  // 3. Mauve/Brown swatches (#937F79 - 40% calibration swatch)
   if (h >= 0 && h <= 32 && s >= 0.10 && s <= 0.42 && v >= 0.35 && v <= 0.75) {
     return { isCandidate: true, family: 'MAUVE' };
   }
@@ -144,13 +143,17 @@ export function isStripCandidateColor(r, g, b) {
     return { isCandidate: true, family: 'WHITE_EXPIRY' };
   }
 
+  // Skip human skin tone background only if not matching calibrated strip swatches above
+  if (isSkinTone(r, g, b)) return { isCandidate: false, family: null };
+
   return { isCandidate: false, family: null };
 }
 
 /**
  * DYNAMIC PHYSICAL WRISTBAND DETECTION ENGINE
  * Locates the physical wristband assembly anywhere inside a captured or uploaded image.
- * Separates into LEFT (H2S Detector), MIDDLE (Reference Scale), RIGHT (Expiry Indicator).
+ * Uses grid clustering, spatial density, multi-family three-region validation, and
+ * feature end identification before running color analysis.
  */
 export function detectAndSegmentWristband(ctx, width, height) {
   if (!ctx || width <= 0 || height <= 0) {
@@ -168,9 +171,8 @@ export function detectAndSegmentWristband(ctx, width, height) {
     const imageData = ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
 
-    const step = Math.max(3, Math.floor(Math.min(width, height) / 100));
+    const step = Math.max(2, Math.floor(Math.min(width, height) / 100));
     let candidatePixels = [];
-    let colorFamiliesFound = new Set();
     let skinPixelCount = 0;
     let totalSampled = 0;
 
@@ -185,22 +187,18 @@ export function detectAndSegmentWristband(ctx, width, height) {
 
         if (a < 128) continue;
 
-        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-
         if (isSkinTone(r, g, b)) {
           skinPixelCount++;
         }
 
         const match = isStripCandidateColor(r, g, b);
         if (match.isCandidate) {
-          candidatePixels.push({ x, y, r, g, b, lum, family: match.family });
-          colorFamiliesFound.add(match.family);
+          candidatePixels.push({ x, y, r, g, b, family: match.family });
         }
       }
     }
 
-    // MANDATORY PHYSICAL OBJECT REJECTION:
-    // If fewer than 20 candidate pixels found, REJECT IMMEDIATELY. Do NOT fall back to wall/clothing background!
+    // Hard rejection if insufficient candidate pixels sampled
     if (candidatePixels.length < 20) {
       return {
         isDetected: false,
@@ -212,76 +210,207 @@ export function detectAndSegmentWristband(ctx, width, height) {
       };
     }
 
-    const xs = candidatePixels.map(p => p.x).sort((a, b) => a - b);
-    const ys = candidatePixels.map(p => p.y).sort((a, b) => a - b);
+    // Grid-based Connected Component Clustering to find contiguous physical object candidate
+    const cellSize = Math.max(10, Math.floor(Math.min(width, height) / 30));
+    const gridCols = Math.ceil(width / cellSize);
+    const gridRows = Math.ceil(height / cellSize);
+    const grid = Array.from({ length: gridRows }, () => Array.from({ length: gridCols }, () => []));
 
-    const pLow = Math.floor(candidatePixels.length * 0.05);
-    const pHigh = Math.ceil(candidatePixels.length * 0.95) - 1;
+    candidatePixels.forEach(p => {
+      const c = Math.floor(p.x / cellSize);
+      const r = Math.floor(p.y / cellSize);
+      if (r >= 0 && r < gridRows && c >= 0 && c < gridCols) {
+        grid[r][c].push(p);
+      }
+    });
 
-    const minX = xs[pLow] !== undefined ? xs[pLow] : xs[0];
-    const maxX = xs[pHigh] !== undefined ? xs[pHigh] : xs[xs.length - 1];
-    const minY = ys[pLow] !== undefined ? ys[pLow] : ys[0];
-    const maxY = ys[pHigh] !== undefined ? ys[pHigh] : ys[ys.length - 1];
+    const visited = Array.from({ length: gridRows }, () => new Array(gridCols).fill(false));
+    const clusters = [];
 
-    let boxX = Math.max(0, minX);
-    let boxY = Math.max(0, minY);
-    let boxW = Math.max(10, maxX - minX);
-    let boxH = Math.max(10, maxY - minY);
+    for (let r = 0; r < gridRows; r++) {
+      for (let c = 0; c < gridCols; c++) {
+        if (visited[r][c] || grid[r][c].length === 0) continue;
 
-    const padX = Math.round(boxW * 0.05);
-    const padY = Math.round(boxH * 0.05);
+        const currentCluster = [];
+        const queue = [[r, c]];
+        visited[r][c] = true;
 
-    boxX = Math.max(0, boxX - padX);
-    boxY = Math.max(0, boxY - padY);
-    boxW = Math.min(width - boxX, boxW + padX * 2);
-    boxH = Math.min(height - boxY, boxH + padY * 2);
+        while (queue.length > 0) {
+          const [currR, currC] = queue.shift();
+          currentCluster.push(...grid[currR][currC]);
 
-    const aspectRatio = boxW / boxH;
-    const areaRatio = (boxW * boxH) / (width * height);
+          // Check 8-neighbor grid cells
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              if (dr === 0 && dc === 0) continue;
+              const nr = currR + dr;
+              const nc = currC + dc;
+              if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols && !visited[nr][nc] && grid[nr][nc].length > 0) {
+                visited[nr][nc] = true;
+                queue.push([nr, nc]);
+              }
+            }
+          }
+        }
 
-    const isValidAspect = (aspectRatio >= 1.4 && aspectRatio <= 9.0) || (aspectRatio >= 0.12 && aspectRatio <= 0.70);
-    const isValidSize = areaRatio >= 0.015 && boxW >= 35 && boxH >= 15;
+        if (currentCluster.length >= 15) {
+          clusters.push(currentCluster);
+        }
+      }
+    }
 
-    if (!isValidAspect || !isValidSize) {
+    if (clusters.length === 0) {
       return {
         isDetected: false,
         issues: [
           "Uploaded image is not correct.",
-          "Detected strip region does not match the physical dimensions of the H₂S detector wristband."
+          "No contiguous physical wristband object found."
         ],
-        detectionConfidence: 10
+        detectionConfidence: 0
       };
     }
 
-    let leftPadX = boxX + boxW * 0.03;
-    let leftPadW = boxW * 0.28;
+    // Evaluate each contiguous cluster for physical geometry & 3-region spatial structure
+    let bestCandidate = null;
 
-    let midPadX = boxX + boxW * 0.34;
-    let midPadW = boxW * 0.38;
+    for (const cluster of clusters) {
+      const xs = cluster.map(p => p.x);
+      const ys = cluster.map(p => p.y);
 
-    let rightPadX = boxX + boxW * 0.75;
-    let rightPadW = boxW * 0.22;
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
 
-    let innerY = boxY + boxH * 0.15;
-    let innerH = boxH * 0.70;
+      const boxW = Math.max(1, maxX - minX + step);
+      const boxH = Math.max(1, maxY - minY + step);
 
-    // Check if strip is flipped horizontally (blue/white expiry badge on the left side)
-    const rightSidePixels = candidatePixels.filter(p => p.x >= boxX + boxW * 0.50);
-    const leftSidePixels = candidatePixels.filter(p => p.x < boxX + boxW * 0.50);
+      const isHorizontal = boxW >= boxH;
+      const longAxis = isHorizontal ? boxW : boxH;
+      const shortAxis = isHorizontal ? boxH : boxW;
+      const aspectRatio = longAxis / shortAxis;
+      const areaRatio = (boxW * boxH) / (width * height);
 
-    const leftBlueCount = leftSidePixels.filter(p => p.family === 'BLUE_EXPIRY' || p.family === 'WHITE_EXPIRY').length;
-    const rightBlueCount = rightSidePixels.filter(p => p.family === 'BLUE_EXPIRY' || p.family === 'WHITE_EXPIRY').length;
+      // Grid sampling density fill factor check:
+      // Scattered pixels across a person span a huge box with low fill factor.
+      const gridSamplesPossible = Math.max(1, (boxW / step) * (boxH / step));
+      const fillFactor = cluster.length / gridSamplesPossible;
 
-    if (leftBlueCount > rightBlueCount + 2) {
-      leftPadX = boxX + boxW * 0.72;
-      leftPadW = boxW * 0.25;
-      rightPadX = boxX + boxW * 0.03;
-      rightPadW = boxW * 0.28;
+      // Physical geometry criteria:
+      const validAspect = aspectRatio >= 1.5 && aspectRatio <= 9.0;
+      const validSize = areaRatio >= 0.005 && longAxis >= 35 && shortAxis >= 10;
+      const validDensity = fillFactor >= 0.15; // Must be contiguous wristband object
+
+      if (!validAspect || !validSize || !validDensity) {
+        continue;
+      }
+
+      // Three-Region Spatial Analysis along long axis (0..33%, 33..66%, 66..100%)
+      const sec1 = [];
+      const sec2 = [];
+      const sec3 = [];
+
+      cluster.forEach(p => {
+        const pos = isHorizontal ? (p.x - minX) / boxW : (p.y - minY) / boxH;
+        if (pos < 0.33) sec1.push(p);
+        else if (pos < 0.66) sec2.push(p);
+        else sec3.push(p);
+      });
+
+      if (sec1.length < 2 || sec2.length < 2 || sec3.length < 2) {
+        continue; // Partial or incomplete regions
+      }
+
+      const sec1Families = new Set(sec1.map(p => p.family));
+      const sec2Families = new Set(sec2.map(p => p.family));
+      const sec3Families = new Set(sec3.map(p => p.family));
+
+      const hasExpiry1 = sec1Families.has('BLUE_EXPIRY') || sec1Families.has('WHITE_EXPIRY');
+      const hasExpiry3 = sec3Families.has('BLUE_EXPIRY') || sec3Families.has('WHITE_EXPIRY');
+      const hasDetector1 = sec1Families.has('PURPLE') || sec1Families.has('MAUVE') || sec1Families.has('YELLOW_ORANGE');
+      const hasDetector3 = sec3Families.has('PURPLE') || sec3Families.has('MAUVE') || sec3Families.has('YELLOW_ORANGE');
+      const hasRef2 = sec2Families.size > 0;
+
+      // Must have evidence of all 3 regions (Expiry on one end, Detector on other end, Reference in middle)
+      const validThreeRegions = ((hasExpiry1 && hasDetector3) || (hasExpiry3 && hasDetector1)) && hasRef2;
+
+      if (!validThreeRegions) {
+        continue;
+      }
+
+      const score = (cluster.length / totalSampled) * 100 + fillFactor * 50;
+
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = {
+          cluster,
+          minX, maxX, minY, maxY,
+          boxW, boxH,
+          isHorizontal,
+          hasExpiry1,
+          score
+        };
+      }
     }
 
-    const badgeRGB = extractRobustROIColor(ctx, leftPadX, innerY, leftPadW, innerH);
-    const refScaleRGB = extractRobustROIColor(ctx, midPadX, innerY, midPadW, innerH);
-    const expiryRGB = extractRobustROIColor(ctx, rightPadX, innerY, rightPadW, innerH);
+    if (!bestCandidate) {
+      return {
+        isDetected: false,
+        issues: [
+          "Uploaded image is not correct.",
+          "Physical wristband object was not detected. Please ensure all 3 regions (detector, scale, expiry) are visible."
+        ],
+        detectionConfidence: 0
+      };
+    }
+
+    const { minX, maxX, minY, maxY, isHorizontal, hasExpiry1 } = bestCandidate;
+
+    const padX = Math.round((maxX - minX) * 0.04);
+    const padY = Math.round((maxY - minY) * 0.04);
+
+    const boxX = Math.max(0, minX - padX);
+    const boxY = Math.max(0, minY - padY);
+    const boxW = Math.min(width - boxX, (maxX - minX) + padX * 2);
+    const boxH = Math.min(height - boxY, (maxY - minY) + padY * 2);
+
+    let badgeROI, refROI, expiryROI;
+
+    if (isHorizontal) {
+      const innerY = boxY + boxH * 0.15;
+      const innerH = boxH * 0.70;
+
+      if (hasExpiry1) {
+        // Expiry indicator is on the LEFT side of image, H2S Detector pad is on the RIGHT side
+        expiryROI = { x: Math.round(boxX + boxW * 0.03), y: Math.round(innerY), w: Math.round(boxW * 0.28), h: Math.round(innerH) };
+        refROI = { x: Math.round(boxX + boxW * 0.34), y: Math.round(innerY), w: Math.round(boxW * 0.38), h: Math.round(innerH) };
+        badgeROI = { x: Math.round(boxX + boxW * 0.73), y: Math.round(innerY), w: Math.round(boxW * 0.24), h: Math.round(innerH) };
+      } else {
+        // Standard Orientation: H2S Detector pad is on the LEFT, Expiry indicator is on the RIGHT
+        badgeROI = { x: Math.round(boxX + boxW * 0.03), y: Math.round(innerY), w: Math.round(boxW * 0.28), h: Math.round(innerH) };
+        refROI = { x: Math.round(boxX + boxW * 0.34), y: Math.round(innerY), w: Math.round(boxW * 0.38), h: Math.round(innerH) };
+        expiryROI = { x: Math.round(boxX + boxW * 0.73), y: Math.round(innerY), w: Math.round(boxW * 0.24), h: Math.round(innerH) };
+      }
+    } else {
+      // Vertical Wristband orientation (top to bottom)
+      const innerX = boxX + boxW * 0.15;
+      const innerW = boxW * 0.70;
+
+      if (hasExpiry1) {
+        // Expiry on TOP, Detector on BOTTOM
+        expiryROI = { x: Math.round(innerX), y: Math.round(boxY + boxH * 0.03), w: Math.round(innerW), h: Math.round(boxH * 0.28) };
+        refROI = { x: Math.round(innerX), y: Math.round(boxY + boxH * 0.34), w: Math.round(innerW), h: Math.round(boxH * 0.38) };
+        badgeROI = { x: Math.round(innerX), y: Math.round(boxY + boxH * 0.73), w: Math.round(innerW), h: Math.round(boxH * 0.24) };
+      } else {
+        // Detector on TOP, Expiry on BOTTOM
+        badgeROI = { x: Math.round(innerX), y: Math.round(boxY + boxH * 0.03), w: Math.round(innerW), h: Math.round(boxH * 0.28) };
+        refROI = { x: Math.round(innerX), y: Math.round(boxY + boxH * 0.34), w: Math.round(innerW), h: Math.round(boxH * 0.38) };
+        expiryROI = { x: Math.round(innerX), y: Math.round(boxY + boxH * 0.73), w: Math.round(innerW), h: Math.round(boxH * 0.24) };
+      }
+    }
+
+    const badgeRGB = extractRobustROIColor(ctx, badgeROI.x, badgeROI.y, badgeROI.w, badgeROI.h);
+    const refScaleRGB = extractRobustROIColor(ctx, refROI.x, refROI.y, refROI.w, refROI.h);
+    const expiryRGB = extractRobustROIColor(ctx, expiryROI.x, expiryROI.y, expiryROI.w, expiryROI.h);
 
     if (!badgeRGB || !refScaleRGB || !expiryRGB) {
       return {
@@ -290,13 +419,13 @@ export function detectAndSegmentWristband(ctx, width, height) {
           "Uploaded image is not correct.",
           "Could not isolate valid physical detector, scale, and expiry regions from the wristband."
         ],
-        detectionConfidence: 15
+        detectionConfidence: 0
       };
     }
 
     const isSkinDominant = (skinPixelCount / totalSampled) > 0.70;
-    let detectionConfidence = Math.round(Math.min(96, (candidatePixels.length / (totalSampled * 0.15)) * 100));
-    if (isSkinDominant) detectionConfidence = Math.max(20, detectionConfidence - 25);
+    let detectionConfidence = Math.round(Math.min(96, (bestCandidate.cluster.length / (totalSampled * 0.12)) * 100));
+    if (isSkinDominant) detectionConfidence = Math.max(30, detectionConfidence - 20);
 
     return {
       isDetected: true,
@@ -310,9 +439,9 @@ export function detectAndSegmentWristband(ctx, width, height) {
         h: Math.round(boxH)
       },
       regionROIs: {
-        badgeROI: { x: Math.round(leftPadX), y: Math.round(innerY), w: Math.round(leftPadW), h: Math.round(innerH) },
-        refROI: { x: Math.round(midPadX), y: Math.round(innerY), w: Math.round(midPadW), h: Math.round(innerH) },
-        expiryROI: { x: Math.round(rightPadX), y: Math.round(innerY), w: Math.round(rightPadW), h: Math.round(innerH) }
+        badgeROI,
+        refROI,
+        expiryROI
       },
       rawWidth: width,
       rawHeight: height,
@@ -728,8 +857,8 @@ export function calculateLaplacianVariance(imageData) {
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const val = gray[(y - 1) * width + x] + gray[(y + 1) * width + x] +
-                  gray[y * width + (x - 1)] + gray[y * width + (x + 1)] -
-                  4 * gray[y * width + x];
+        gray[y * width + (x - 1)] + gray[y * width + (x + 1)] -
+        4 * gray[y * width + x];
       lap[count++] = val;
       sum += val;
     }
@@ -766,9 +895,9 @@ export function validateWristbandImage(badgeData, refScaleData, expiryData, dete
       issues: detectionInfo.issues && detectionInfo.issues.length > 0
         ? detectionInfo.issues
         : [
-            "Uploaded image is not correct.",
-            "Please capture a clear image showing the complete H₂S detector wristband."
-          ],
+          "Uploaded image is not correct.",
+          "Please capture a clear image showing the complete H₂S detector wristband."
+        ],
       analysisConfidence: detectionInfo.detectionConfidence ?? 0
     };
   }
