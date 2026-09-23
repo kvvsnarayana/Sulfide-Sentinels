@@ -1,5 +1,13 @@
 {
   "appId": "com.sulfidesentinels.app",
   "appName": "Sulfide Sentinels",
-  "webDir": "dist"
+  "webDir": "dist",
+  "plugins": {
+    "Camera": {
+      "permissions": ["camera", "photos"]
+    }
+  },
+  "android": {
+    "allowMixedContent": true
+  }
 }
