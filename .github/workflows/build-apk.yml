@@ -17,10 +17,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Node Dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build Web Assets (Vite)
         run: npm run build
@@ -28,6 +27,11 @@ jobs:
       - name: Initialize Android Platform
         run: |
           npx cap add android
+
+      - name: Add Camera Permissions to AndroidManifest
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i '/<manifest/a \    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" />\n    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />' $MANIFEST
 
       - name: Sync Web Assets to Android
         run: |
